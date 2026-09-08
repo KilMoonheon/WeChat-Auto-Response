@@ -6,15 +6,63 @@ from __future__ import annotations
 import logging
 import os
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any
 
 import yaml
 from wechatauto import WeChatDB
-from wechatauto.guia import WeChatGUI, quick_send
+from wechatauto.guia import WeChatGUI
+
+from user_input_monitor import UserInputMonitor, note_bot_cursor_move
 
 CONFIG_PATH = Path(__file__).with_name("config.yaml")
+
+# 人工接管后阻止 wechatauto 继续点击/输入/置顶微信
+_WECHAT_OP_CANCEL = threading.Event()
+
+
+def _apply_wechatauto_patches() -> None:
+    if getattr(WeChatGUI, "_auto_reply_patched", False):
+        return
+    WeChatGUI._auto_reply_patched = True
+
+    WeChatGUI._minimize_blockers = lambda self: 0  # type: ignore[method-assign]
+
+    def _guard_bool(method):
+        def wrapped(self, *args, **kwargs):
+            if _WECHAT_OP_CANCEL.is_set():
+                return False
+            return method(self, *args, **kwargs)
+
+        return wrapped
+
+    def _guard_void(method):
+        def wrapped(self, *args, **kwargs):
+            if _WECHAT_OP_CANCEL.is_set():
+                return None
+            return method(self, *args, **kwargs)
+
+        return wrapped
+
+    def _guard_wx_click(method):
+        def wrapped(self, x, y, right=False):
+            if _WECHAT_OP_CANCEL.is_set():
+                return None
+            note_bot_cursor_move(x, y)
+            return method(self, x, y, right=right)
+
+        return wrapped
+
+    WeChatGUI.wx_click = _guard_wx_click(WeChatGUI.wx_click)
+    WeChatGUI.input_text = _guard_bool(WeChatGUI.input_text)
+    WeChatGUI.click_send = _guard_bool(WeChatGUI.click_send)
+    WeChatGUI.bring_to_front = _guard_bool(WeChatGUI.bring_to_front)
+    WeChatGUI._search_chat = _guard_bool(WeChatGUI._search_chat)
+
+
+_apply_wechatauto_patches()
 
 logging.basicConfig(
     level=logging.INFO,
@@ -74,6 +122,14 @@ def bust_session_cache(db: WeChatDB) -> None:
                 os.remove(os.path.join(db.workdir, name))
             except OSError:
                 pass
+
+
+def get_wechat_hwnd() -> int | None:
+    try:
+        gui = WeChatGUI()
+        return gui.main_hwnd or None
+    except Exception:
+        return None
 
 
 def minimize_wechat() -> bool:
@@ -151,6 +207,16 @@ class AutoReplyBot:
             if n
         }
         self.watchlist: list[WatchedContact] = []
+        settings = config.get("settings") or {}
+        self.monitor = UserInputMonitor(
+            enabled=settings.get("stop_on_user_input", True),
+            move_threshold=int(settings.get("user_move_threshold", 8)),
+            watch_timeout=float(settings.get("takeover_watch_seconds", 600)),
+            foreground_grace=float(settings.get("takeover_foreground_grace", 2.0)),
+            bot_cursor_grace=float(settings.get("bot_cursor_grace", 0.45)),
+            bot_teleport_threshold=int(settings.get("bot_teleport_threshold", 80)),
+            bot_speed_threshold=float(settings.get("bot_speed_threshold", 3500)),
+        )
 
     def _cooldown_seconds(self, item: WatchedContact) -> float:
         if "cooldown_seconds" in item.rule:
@@ -180,6 +246,118 @@ class AutoReplyBot:
         if summary in item.bot_replies:
             return True
         return False
+
+    def _finish_takeover_skip(
+        self, item: WatchedContact, last_time: int, summary: str, *, phase: str
+    ) -> None:
+        _WECHAT_OP_CANCEL.set()
+        log.info("[%s] 人工接管（%s），已跳过自动回复", item.nickname, phase)
+        self.monitor.clear_takeover()
+        item.last_time = last_time
+        item.last_summary = summary
+        self.monitor.disarm_takeover_watch("人工接管")
+
+    def _poll_takeover_skip(
+        self, item: WatchedContact, last_time: int, summary: str, *, phase: str
+    ) -> bool:
+        if not self.monitor.poll():
+            return False
+        self._finish_takeover_skip(item, last_time, summary, phase=phase)
+        return True
+
+    def _send_reply_with_takeover(
+        self, item: WatchedContact, reply: str, last_time: int, summary: str
+    ) -> tuple[dict[str, Any] | None, str]:
+        """准备回复前先监听人工接管；打开会话/发送均在后台线程，主线程轮询可及时取消。"""
+        settings = self.config.get("settings") or {}
+        _WECHAT_OP_CANCEL.clear()
+        self.monitor.arm_takeover_watch(get_wechat_hwnd())
+
+        gui_box: dict[str, Any] = {"gui": None}
+
+        def init_gui() -> None:
+            gui_box["gui"] = WeChatGUI()
+
+        init_thread = threading.Thread(target=init_gui, daemon=True)
+        init_thread.start()
+        while init_thread.is_alive():
+            if self._poll_takeover_skip(item, last_time, summary, phase="准备中"):
+                return None, "takeover"
+            time.sleep(0.05)
+        init_thread.join()
+
+        gui = gui_box["gui"]
+        if gui is None:
+            self.monitor.disarm_takeover_watch("初始化失败")
+            return None, "open_failed"
+
+        open_box = {"ok": False}
+
+        def open_worker() -> None:
+            open_box["ok"] = gui.open_chat(item.nickname)
+
+        open_thread = threading.Thread(target=open_worker, daemon=True)
+        open_thread.start()
+        while open_thread.is_alive():
+            if self._poll_takeover_skip(item, last_time, summary, phase="打开会话"):
+                return None, "takeover"
+            time.sleep(0.05)
+        open_thread.join()
+
+        if self.monitor.takeover_this_round:
+            self._finish_takeover_skip(item, last_time, summary, phase="打开会话")
+            return None, "takeover"
+
+        if not open_box["ok"]:
+            self.monitor.disarm_takeover_watch("打开失败")
+            return None, "open_failed"
+
+        pre_wait = float(settings.get("takeover_pre_send_wait", 1.0))
+        deadline = time.monotonic() + max(0.0, pre_wait)
+        while time.monotonic() < deadline:
+            if self._poll_takeover_skip(item, last_time, summary, phase="发送前"):
+                return None, "takeover"
+            time.sleep(0.05)
+
+        if self.monitor.takeover_this_round:
+            self._finish_takeover_skip(item, last_time, summary, phase="发送前")
+            return None, "takeover"
+
+        result_box: dict[str, Any] = {"result": None}
+
+        def worker() -> None:
+            result_box["result"] = gui.send_msg(reply, item.nickname)
+
+        worker_thread = threading.Thread(target=worker, daemon=True)
+        worker_thread.start()
+        while worker_thread.is_alive():
+            if self.monitor.poll():
+                worker_thread.join(timeout=90)
+                res = result_box.get("result")
+                if res and res.get("status") == "成功":
+                    log.info(
+                        "[%s] 人工接管（发送过程中），消息可能已发出，跳过最小化",
+                        item.nickname,
+                    )
+                    _WECHAT_OP_CANCEL.set()
+                    self.monitor.clear_takeover()
+                    self.monitor.disarm_takeover_watch("人工接管")
+                    return res, "takeover_after_send"
+                self._finish_takeover_skip(item, last_time, summary, phase="发送过程中")
+                return res, "takeover"
+            time.sleep(0.05)
+
+        worker_thread.join()
+        if self.monitor.takeover_this_round:
+            res = result_box.get("result")
+            if res and res.get("status") == "成功":
+                _WECHAT_OP_CANCEL.set()
+                self.monitor.clear_takeover()
+                self.monitor.disarm_takeover_watch("人工接管")
+                return res, "takeover_after_send"
+            self._finish_takeover_skip(item, last_time, summary, phase="发送过程中")
+            return res, "takeover"
+        return result_box["result"], "ok"
 
     def _handle_session(self, item: WatchedContact, session: dict[str, Any]) -> None:
         last_time = int(session.get("last_time") or 0)
@@ -236,27 +414,80 @@ class AutoReplyBot:
             return
 
         log.info("[%s] 收到: %s", item.nickname, summary[:80])
-        result = quick_send(reply, item.nickname)
+        result, send_status = self._send_reply_with_takeover(
+            item, reply, last_time, summary
+        )
+
+        if send_status == "takeover":
+            return
+
+        if send_status == "open_failed":
+            log.error("[%s] 打开会话失败", item.nickname)
+            item.last_time = last_time
+            item.last_summary = summary
+            return
+
+        if send_status == "takeover_after_send":
+            if result and result.get("status") == "成功":
+                log.info("[%s] 已回复: %s", item.nickname, reply[:80])
+                item.last_reply_at = time.time()
+                item.bot_replies.add(reply)
+                self._finalize_reply_session(item, last_time, reply)
+            _WECHAT_OP_CANCEL.set()
+            return
+
         if result and result.get("status") == "成功":
             log.info("[%s] 已回复: %s", item.nickname, reply[:80])
             item.last_reply_at = time.time()
-            if self.config.get("settings", {}).get("minimize_after_reply", True):
-                if minimize_wechat():
-                    log.info("已最小化微信窗口")
             item.bot_replies.add(reply)
-            refreshed = self._find_session(item.username)
-            if refreshed:
-                rt = int(refreshed.get("last_time") or last_time)
-                rs = (refreshed.get("summary") or reply).strip()
-                item.processed_keys.add((item.username, rt))
-                item.last_time = rt
-                item.last_summary = rs
-                return
+            self._finalize_reply_session(item, last_time, reply)
+
+            if self.config.get("settings", {}).get("minimize_after_reply", True):
+                wait_s = float(
+                    self.config.get("settings", {}).get("takeover_before_minimize_wait", 3)
+                )
+                deadline = time.monotonic() + max(0.0, wait_s)
+                while time.monotonic() < deadline:
+                    if self.monitor.poll():
+                        log.info("[%s] 人工接管，跳过最小化，继续监听", item.nickname)
+                        self.monitor.clear_takeover()
+                        return
+                    time.sleep(0.05)
+                if not self.monitor.takeover_this_round and minimize_wechat():
+                    log.info("已最小化微信窗口")
+                self.monitor.disarm_takeover_watch("本轮结束")
+            else:
+                self._wait_takeover_while_armed(item.nickname)
+            return
         else:
             log.error("[%s] 发送失败: %s", item.nickname, result)
+            self.monitor.disarm_takeover_watch("发送失败")
 
         item.last_time = last_time
         item.last_summary = summary
+
+    def _finalize_reply_session(
+        self, item: WatchedContact, last_time: int, reply: str
+    ) -> None:
+        refreshed = self._find_session(item.username)
+        if refreshed:
+            rt = int(refreshed.get("last_time") or last_time)
+            rs = (refreshed.get("summary") or reply).strip()
+            item.processed_keys.add((item.username, rt))
+            item.last_time = rt
+            item.last_summary = rs
+        else:
+            item.last_time = last_time
+            item.last_summary = reply.strip()
+
+    def _wait_takeover_while_armed(self, nickname: str) -> None:
+        while self.monitor.takeover_armed:
+            if self.monitor.poll():
+                log.info("[%s] 人工接管，程序继续监听", nickname)
+                self.monitor.clear_takeover()
+                return
+            time.sleep(0.05)
+        self.monitor.disarm_takeover_watch("本轮结束")
 
     def _find_session(self, username: str) -> dict[str, Any] | None:
         for session in self.db.get_sessions(limit=500):
@@ -275,8 +506,14 @@ class AutoReplyBot:
             gui = WeChatGUI()
             gui.open_chat(item.nickname)
             time.sleep(float(self.config.get("settings", {}).get("sync_wait", 0.8)))
+            self.monitor.arm_takeover_watch(get_wechat_hwnd())
         except Exception as exc:
             log.warning("[%s] 打开会话同步失败: %s", item.nickname, exc)
+            self.monitor.disarm_takeover_watch("同步失败")
+            return None
+        if self.monitor.takeover_this_round:
+            self.monitor.disarm_takeover_watch("同步中断")
+            return None
         bust_session_cache(self.db)
         return self._find_session(item.username)
 
@@ -351,9 +588,18 @@ class AutoReplyBot:
             len(self.watchlist),
         )
         log.info("提示：仅回复程序启动后收到的新消息。")
+        if self.monitor.enabled:
+            pre_wait = float(settings.get("takeover_pre_send_wait", 1.0))
+            log.info(
+                "提示：准备回复时移动鼠标可立即取消；窗口拉起后 %.1f 秒内移动鼠标也可跳过发送",
+                pre_wait,
+            )
 
+        self.monitor.start()
         try:
             while True:
+                if self.monitor.takeover_armed:
+                    self.monitor.poll()
                 sessions = self._load_sessions(refresh=True)
                 for item in self.watchlist:
                     session = sessions.get(item.username)
@@ -361,9 +607,12 @@ class AutoReplyBot:
                         continue
                     session = self._prepare_session(item, session)
                     self._handle_session(item, session)
-                time.sleep(interval)
+                sleep_for = 0.05 if self.monitor.takeover_armed else interval
+                time.sleep(sleep_for)
         except KeyboardInterrupt:
             log.info("正在停止…")
+        finally:
+            self.monitor.stop()
 
 
 def main() -> None:
