@@ -4,6 +4,7 @@
 settings:
   poll_interval: 1.0
   reply_cooldown: 180
+  minimize_after_reply: true
   sync_mobile: false
   sync_wait: 0.8
 
