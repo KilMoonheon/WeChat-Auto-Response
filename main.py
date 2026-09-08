@@ -76,6 +76,21 @@ def bust_session_cache(db: WeChatDB) -> None:
                 pass
 
 
+def minimize_wechat() -> bool:
+    """发送完成后将微信主窗口最小化到任务栏。"""
+    try:
+        gui = WeChatGUI()
+        if not gui.main_hwnd:
+            return False
+        gui.restore_zorder()
+        SW_MINIMIZE = 6
+        gui._input._user32.ShowWindow(gui.main_hwnd, SW_MINIMIZE)
+        return True
+    except Exception as exc:
+        log.warning("最小化微信窗口失败: %s", exc)
+        return False
+
+
 def resolve_username(db: WeChatDB, nickname: str) -> str | None:
     username = db.username_by_nickname(nickname)
     if username:
@@ -225,6 +240,9 @@ class AutoReplyBot:
         if result and result.get("status") == "成功":
             log.info("[%s] 已回复: %s", item.nickname, reply[:80])
             item.last_reply_at = time.time()
+            if self.config.get("settings", {}).get("minimize_after_reply", True):
+                if minimize_wechat():
+                    log.info("已最小化微信窗口")
             item.bot_replies.add(reply)
             refreshed = self._find_session(item.username)
             if refreshed:
