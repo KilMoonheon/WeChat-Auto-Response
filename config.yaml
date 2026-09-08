@@ -1,0 +1,37 @@
+# 微信自动回复配置
+# nickname = 微信聊天列表里显示的「备注名」或「昵称」（不是你的登录名）
+# 适配微信 4.1.12+
+
+settings:
+  poll_interval: 1.0   # 后台检查新消息间隔（秒），此阶段不弹窗、不置顶微信
+  reply_cooldown: 180  # 同一聊天内，上次自动回复后 N 秒内不再回复（0=关闭）
+  sync_mobile: false    # 仅有未读时打开会话拉手机消息（false=完全后台监听）
+  sync_wait: 0.1       # 打开会话后等待同步的秒数
+  # mobile_sync_interval 已废弃：不再定时打开微信，避免打扰
+
+contacts:
+  # 测试：文件传输助手（PC/手机发给自己的消息，需 allow_self: true）
+  # 手机测试：PC 微信保持登录联网，启动本程序后再从手机发给「文件传输助手」
+  文件传输助手:
+    enabled: true
+    allow_self: true
+    reply_mode: keyword
+    default: "收到，稍后回复您。"
+    keywords:
+      你好: "你好！有什么可以帮您？"
+      在吗: "在的，请说。"
+    
+  宗千寻:
+    enabled: true
+    reply_mode: fixed
+    default: "我现在在睡觉/没看微信，我看到消息后会尽快回复。"
+    cooldown_seconds: 60  # 可选：单独覆盖全局 reply_cooldown（秒）
+
+  # 真实好友示例：把「好友昵称」换成聊天列表里显示的名字
+  # 张三:
+  #   enabled: true
+  #   reply_mode: fixed
+  #   default: "您好，我现在不在电脑旁，看到消息后会尽快回复。"
+
+  # 注意：不要填你自己的昵称「吉文轩」，那是当前登录账号，不是聊天对象
+  

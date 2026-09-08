@@ -1,0 +1,5 @@
+# 微信 4.1.12+ 请用 wechatauto-replica（wxauto 的 4.x 兼容分支）
+# 需 Python 3.9–3.13（推荐 3.13）
+wechatauto-replica>=1.2.1
+pypinyin>=0.50
+PyYAML>=6.0
