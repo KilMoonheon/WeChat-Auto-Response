@@ -2,7 +2,7 @@
 
 基于 [wechatauto-replica](https://github.com/fanyuantaier/wechatauto-replica) 的 Windows 个人微信自动回复小工具。通过 YAML 配置**按联系人昵称**决定监听范围与回复内容，适用于微信 PC 客户端 **4.1.12+**。
 
-> 仅供个人学习与交流，请勿用于营销、群发等用途。使用自动化可能违反《微信软件许可及服务协议》，风险自负。项目基于cursor开发
+> 仅供个人学习与交流，请勿用于营销、群发等用途。使用自动化可能违反《微信软件许可及服务协议》，风险自负。
 
 ## 功能
 
@@ -10,6 +10,7 @@
 - 两种回复模式：`fixed`（固定话术）、`keyword`（关键词匹配）
 - **冷却时间**：同一聊天在上一次自动回复后 N 秒内不再回复（默认 180 秒）
 - **后台监听**：轮询本地会话数据库，监听阶段不主动弹窗
+- **人工接管**：准备回复或窗口拉起后，**移动鼠标**可跳过本次自动回复（程序继续监听）
 - 仅处理程序**启动之后**的新消息
 
 ## 环境要求
@@ -60,6 +61,14 @@ Windows 也可双击 `run.bat`（会自动安装依赖并启动）。
 | `poll_interval` | `1.0` | 后台检查新消息间隔（秒） |
 | `reply_cooldown` | `180` | 同一聊天两次自动回复的最小间隔（秒），`0` 表示关闭 |
 | `minimize_after_reply` | `true` | 发送成功后是否最小化微信窗口到任务栏 |
+| `stop_on_user_input` | `true` | 准备回复或微信被拉起后，移动鼠标则跳过本次自动回复（程序不退出） |
+| `user_move_threshold` | `8` | 判定鼠标移动的最小像素距离 |
+| `bot_cursor_grace` | `0.45` | 程序 `SetCursorPos` 后忽略鼠标移动的秒数（防误判） |
+| `bot_teleport_threshold` | `80` | 单次位移超过该像素视为程序瞬移 |
+| `bot_speed_threshold` | `3500` | 移动速度超过该值（像素/秒）视为程序移动 |
+| `takeover_watch_seconds` | `600` | 拉起微信后人工接管监听最长持续时间（秒，`0`=不限） |
+| `takeover_before_minimize_wait` | `3` | 自动最小化微信前，留给人工接管的等待秒数 |
+| `takeover_pre_send_wait` | `1.0` | 窗口拉起后、自动发送前的等待秒数；此期间人工接管将**不发送**回复 |
 | `sync_mobile` | `false` | 检测到未读时是否打开会话以同步手机消息 |
 | `sync_wait` | `0.8` | 打开会话后等待同步的秒数 |
 
@@ -105,10 +114,11 @@ contacts:
 
 ```
 微信自动回复/
-├── main.py           # 主程序
-├── config.yaml       # 配置文件（建议勿提交含真实昵称的版本到公开仓库）
-├── requirements.txt  # Python 依赖
-├── run.bat           # Windows 一键启动
+├── main.py                 # 主程序
+├── user_input_monitor.py   # 人工接管检测（鼠标钩子）
+├── config.yaml             # 配置文件（建议勿提交含真实昵称的版本到公开仓库）
+├── requirements.txt        # Python 依赖
+├── run.bat                 # Windows 一键启动
 └── README.md
 ```
 
