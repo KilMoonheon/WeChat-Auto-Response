@@ -3,6 +3,7 @@
 基于 [wechatauto-replica](https://github.com/fanyuantaier/wechatauto-replica) 的 Windows 个人微信自动回复小工具。通过 YAML 配置**按联系人昵称**决定监听范围与回复内容，适用于微信 PC 客户端 **4.1.12+**。
 
 > 仅供个人学习与交流，请勿用于营销、群发等用途。使用自动化可能违反《微信软件许可及服务协议》，风险自负。
+> 本项目使用cursor开发。
 
 ## 功能
 
