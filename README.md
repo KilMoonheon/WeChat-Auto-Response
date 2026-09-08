@@ -1,5 +1,5 @@
 # 微信自动回复
-
+# 适配最新版本的PC版微信，简单易用，可调性强！
 基于 [wechatauto-replica](https://github.com/fanyuantaier/wechatauto-replica) 的 Windows 个人微信自动回复小工具。通过 YAML 配置**按联系人昵称**决定监听范围与回复内容，适用于微信 PC 客户端 **4.1.12+**。
 
 > 仅供个人学习与交流，请勿用于营销、群发等用途。使用自动化可能违反《微信软件许可及服务协议》，风险自负。
@@ -45,7 +45,7 @@ py -3.13 -m pip install -r requirements.txt
 ```bash
 py -3.13 main.py
 ```
-
+打开微信pc版窗口，可以最小化但一定要打开！
 Windows 也可双击 `run.bat`（会自动安装依赖并启动）。
 
 按 `Ctrl+C` 退出。
