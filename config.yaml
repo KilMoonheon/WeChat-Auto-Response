@@ -20,12 +20,6 @@ contacts:
     keywords:
       你好: "你好！有什么可以帮您？"
       在吗: "在的，请说。"
-    
-  宗千寻:
-    enabled: true
-    reply_mode: fixed
-    default: "我现在在睡觉/没看微信，我看到消息后会尽快回复。"
-    cooldown_seconds: 60  # 可选：单独覆盖全局 reply_cooldown（秒）
 
   # 真实好友示例：把「好友昵称」换成聊天列表里显示的名字
   # 张三:
