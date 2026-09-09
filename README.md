@@ -29,6 +29,7 @@
 git clone https://github.com/KilMoonheon/WeChat-Auto-Response.git
 cd WeChat-Auto-Response
 ```
+直接下载zip包也可以而且很方便。
 
 ### 2. 安装依赖
 
