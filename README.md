@@ -26,8 +26,8 @@
 ### 1. 克隆仓库
 
 ```bash
-git clone <你的仓库地址>
-cd 微信自动回复
+git clone https://github.com/KilMoonheon/WeChat-Auto-Response.git
+cd WeChat-Auto-Response
 ```
 
 ### 2. 安装依赖
